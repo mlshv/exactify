@@ -100,11 +100,10 @@ inquirer
 
       const packagesToUpdate = Object.entries(depsWithCarets).map(
         ([packageName, inexactVersion]) => {
-          return [
-            packageName,
-            inexactVersion,
-            vesrionsFromPackageLock[packageName],
-          ]
+          const realVersion =
+            vesrionsFromPackageLock[packageName] ??
+            inexactVersion.replace('^', '')
+          return [packageName, inexactVersion, realVersion]
         },
       )
 
