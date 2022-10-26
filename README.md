@@ -8,6 +8,12 @@ CLI tool that removes ^ prefix from package.json dependecies and replaces them w
 npx exactify
 ```
 
+## Motivation
+
+TL;DR: having inexact versions of dependencies in `package.json` is unsafe because it exposes your package to security and compatibility risks.
+
+See more: [Is your package.json safe?](https://dev.to/mishgun/is-your-packagejson-safe-20c1)
+
 ## Example
 ```shell
 $ npx exactify
