@@ -11,6 +11,77 @@ const example = `${chalk.dim('Example:')} ${chalk.bold(
   '"react": "^17.0.3" -> "react": "17.0.15"',
 )}`
 
+type LockfileType = 'npm' | 'bun'
+
+function detectLockfile(): LockfileType | null {
+  if (fs.existsSync('package-lock.json')) return 'npm'
+  if (fs.existsSync('bun.lock')) return 'bun'
+  return null
+}
+
+function getVersionsFromNpmLockfile(
+  lockContent: string,
+  depsWithCarets: Record<string, string>,
+): Record<string, string> {
+  const lockJson = JSON.parse(lockContent) as {
+    packages: Record<string, { version: string }>
+  }
+
+  return Object.fromEntries(
+    Object.entries(lockJson.packages)
+      .map(([packagePath, { version }]) => {
+        return [packagePath.replace('node_modules/', ''), version]
+      })
+      .filter(([packagePath]) => depsWithCarets[packagePath]),
+  )
+}
+
+function parseJsonc(content: string): unknown {
+  // bun.lock uses JSONC format with trailing commas
+  const stripped = content.replace(/,\s*([\]}])/g, '$1')
+  return JSON.parse(stripped)
+}
+
+function getVersionsFromBunLockfile(
+  lockContent: string,
+  depsWithCarets: Record<string, string>,
+): Record<string, string> {
+  const lockJson = parseJsonc(lockContent) as {
+    packages: Record<string, [string, ...unknown[]]>
+  }
+
+  return Object.fromEntries(
+    Object.entries(lockJson.packages)
+      .filter(([packageName]) => depsWithCarets[packageName])
+      .map(([packageName, tuple]) => {
+        const identifier = tuple[0]
+        // identifier format: "name@version" - extract version after last @
+        const atIndex = identifier.lastIndexOf('@')
+        const version = atIndex > 0 ? identifier.slice(atIndex + 1) : undefined
+        return [packageName, version]
+      })
+      .filter(([, version]) => version !== undefined),
+  )
+}
+
+function getLockfileVersions(
+  lockfileType: LockfileType,
+  depsWithCarets: Record<string, string>,
+): Record<string, string> {
+  const filename = lockfileType === 'npm' ? 'package-lock.json' : 'bun.lock'
+  const content = fs.readFileSync(filename).toString()
+
+  if (lockfileType === 'npm') {
+    return getVersionsFromNpmLockfile(content, depsWithCarets)
+  }
+  return getVersionsFromBunLockfile(content, depsWithCarets)
+}
+
+const lockfileNames: Record<LockfileType, string> = {
+  npm: 'package-lock.json',
+  bun: 'bun.lock',
+}
+
 clear()
 log(
   chalk.bold(
@@ -23,20 +94,22 @@ log(
 
 if (!fs.existsSync('package.json')) {
   log(
-    'exactify is a CLI tool that replaces all inexact package.json versions with specific versions from package-lock.json',
+    'Exactify pins all ^ versions in package.json to exact versions from your lockfile.',
   )
   log(example)
   log(chalk.red('You should run exactify in a directory with package.json'))
   process.exit(0)
 }
 
-if (!fs.existsSync('package-lock.json')) {
-  log('There is no package-lock.json in this directory. Run npm install first')
+const lockfileType = detectLockfile()
+
+if (!lockfileType) {
+  log('No lockfile found in this directory. Run npm install or bun install first')
   process.exit(0)
 }
 
 log(
-  '🙌 You are going to replace all inexact package.json versions with specific versions from package-lock.json',
+  `Exactify will pin all ^ versions in package.json to exact versions from ${lockfileNames[lockfileType]}`,
 )
 log()
 log()
@@ -52,16 +125,22 @@ const prompts: any[] = [
 ]
 
 const isSaveExactSet =
-  fs.existsSync('.npmrc') &&
-  fs.readFileSync('.npmrc').toString().includes('save-exact=true')
+  lockfileType === 'npm'
+    ? fs.existsSync('.npmrc') &&
+      fs.readFileSync('.npmrc').toString().includes('save-exact=true')
+    : fs.existsSync('bunfig.toml') &&
+      fs.readFileSync('bunfig.toml').toString().includes('exact = true')
 
 if (!isSaveExactSet) {
+  const saveExactMessage =
+    lockfileType === 'npm'
+      ? `Do you also want to add save-exact=true in your .npmrc? ${chalk.dim('(recommended)')}`
+      : `Do you also want to add exact = true in your bunfig.toml? ${chalk.dim('(recommended)')}`
+
   prompts.push({
     type: 'confirm',
     name: 'isSaveExactSetConfirmed',
-    message: `Do you also want to add save-exact=true in your .npmrc? ${chalk.dim(
-      '(recommended)',
-    )}`,
+    message: saveExactMessage,
     when: (answers) => answers.isConfirmed,
   })
 }
@@ -71,16 +150,10 @@ inquirer
   .then(({ isConfirmed, isSaveExactSetConfirmed }) => {
     if (isConfirmed) {
       const packageJsonContent = fs.readFileSync('package.json').toString()
-      const packageLockJsonContent = fs
-        .readFileSync('package-lock.json')
-        .toString()
 
       const packageJson = JSON.parse(packageJsonContent) as {
         dependencies?: Record<string, string>
         devDependencies?: Record<string, string>
-      }
-      const pacakgeLockJson = JSON.parse(packageLockJsonContent) as {
-        packages: Record<string, { version: string }>
       }
 
       const depsWithCarets = Object.fromEntries(
@@ -90,18 +163,12 @@ inquirer
         }).filter(([, version]) => version.startsWith('^')),
       )
 
-      const vesrionsFromPackageLock = Object.fromEntries(
-        Object.entries(pacakgeLockJson.packages)
-          .map(([packagePath, { version }]) => {
-            return [packagePath.replace('node_modules/', ''), version]
-          })
-          .filter(([packagePath]) => depsWithCarets[packagePath]),
-      )
+      const versionsFromLockfile = getLockfileVersions(lockfileType, depsWithCarets)
 
       const packagesToUpdate = Object.entries(depsWithCarets).map(
         ([packageName, inexactVersion]) => {
           const realVersion =
-            vesrionsFromPackageLock[packageName] ??
+            versionsFromLockfile[packageName] ??
             inexactVersion.replace('^', '')
           return [packageName, inexactVersion, realVersion]
         },
@@ -143,15 +210,31 @@ inquirer
       log(
         `${
           Object.keys(packagesWithUpdatedMinorVersion).length
-        } minor versions were updated with actual versions from package-lock.json`,
+        } minor versions were updated with actual versions from ${lockfileNames[lockfileType]}`,
       )
       log()
 
       if (isSaveExactSetConfirmed) {
-        if (fs.existsSync('.npmrc')) {
-          fs.appendFileSync('.npmrc', '\nsave-exact=true')
+        if (lockfileType === 'npm') {
+          if (fs.existsSync('.npmrc')) {
+            fs.appendFileSync('.npmrc', '\nsave-exact=true')
+          } else {
+            fs.writeFileSync('.npmrc', 'save-exact=true\n')
+          }
         } else {
-          fs.writeFileSync('.npmrc', 'save-exact=true\n')
+          if (fs.existsSync('bunfig.toml')) {
+            const content = fs.readFileSync('bunfig.toml').toString()
+            if (content.includes('[install]')) {
+              fs.writeFileSync(
+                'bunfig.toml',
+                content.replace('[install]', '[install]\nexact = true'),
+              )
+            } else {
+              fs.appendFileSync('bunfig.toml', '\n[install]\nexact = true\n')
+            }
+          } else {
+            fs.writeFileSync('bunfig.toml', '[install]\nexact = true\n')
+          }
         }
       }
     }

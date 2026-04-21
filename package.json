@@ -1,7 +1,7 @@
 {
   "name": "exactify",
-  "version": "1.1.0",
-  "description": "CLI tool that removes ^ prefix from package.json dependecies and replaces them with specific versions from package-lock.json",
+  "version": "1.2.0",
+  "description": "CLI tool that removes ^ prefix from package.json dependencies and replaces them with specific versions from your lockfile",
   "author": "Mikhail Malyshev",
   "license": "MIT",
   "homepage": "https://github.com/mlshv/exactify",
